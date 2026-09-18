@@ -38,13 +38,25 @@
   #fxbar{display:flex;align-items:center;gap:6px;padding:5px 10px;background:#fff;border-bottom:1px solid var(--border);}
   #cellRef{min-width:70px;text-align:center;font-weight:600;color:#57606a;user-select:none;}
   #fxInput{flex:1;border:1px solid var(--border);border-radius:4px;padding:5px 7px;}
+  .btn-group{display:flex;align-items:center;gap:4px;}
+  .btn-group button{border-radius:5px 0 0 5px;}
+  .btn-group button+button{border-radius:0 5px 5px 0;border-left:0;}
 
   #sheetWrap{flex:1;display:grid;grid-template-columns:48px 1fr;grid-template-rows:26px 1fr;overflow:hidden;position:relative;background:#fff;}
   #corner{border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--header);cursor:pointer;z-index:4;}
   #colHead{grid-area:1/2;overflow:hidden;position:relative;background:var(--header);border-bottom:1px solid var(--border);z-index:3;}
   #rowHead{grid-area:2/1;overflow:hidden;position:relative;background:var(--header);border-right:1px solid var(--border);z-index:3;}
-  #scroller{grid-area:2/2;overflow:auto;position:relative;background:#fff;}
+  #scroller{grid-area:2/2;overflow:hidden;position:relative;background:#fff;}
+  #viewport{position:absolute;inset:0;overflow:auto;}
   #canvas{position:relative;}
+  #frzCorner,#frzTop,#frzLeft{position:absolute;overflow:hidden;display:none;z-index:2;}
+  #frzCorner{top:0;left:0;z-index:4;}
+  #frzTop{top:0;z-index:3;}
+  #frzLeft{left:0;z-index:3;}
+  #colHeadFrozen{position:absolute;top:0;left:0;height:26px;overflow:hidden;z-index:5;display:none;}
+  #rowHeadFrozen{position:absolute;top:0;left:0;width:48px;overflow:hidden;z-index:5;display:none;}
+  .colResizer{position:absolute;top:0;bottom:0;width:5px;cursor:col-resize;z-index:6;}
+  .rowResizer{position:absolute;left:0;right:0;height:5px;cursor:row-resize;z-index:6;}
   .colHeadCell{position:absolute;top:0;height:26px;border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:600;color:#57606a;user-select:none;overflow:hidden;}
   .rowHeadCell{position:absolute;left:0;width:48px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:#57606a;user-select:none;overflow:hidden;}
   .rowHeadCell.hl,.colHeadCell.hl{background:#dcebfd;color:#1a73e8;}
@@ -139,7 +151,14 @@
   <div id="corner" title="Select all"></div>
   <div id="colHead"></div>
   <div id="rowHead"></div>
-  <div id="scroller"><div id="canvas"></div></div>
+  <div id="scroller">
+    <div id="viewport"><div id="canvas"></div></div>
+    <div id="frzCorner"></div>
+    <div id="frzTop"></div>
+    <div id="frzLeft"></div>
+    <div id="colHeadFrozen"></div>
+    <div id="rowHeadFrozen"></div>
+  </div>
 </div>
 
 <div id="tabsbar">
@@ -855,7 +874,7 @@ var copyData=null;               /* internal clipboard 2D array ({f,v}) */
 var ui={};
 function $(id){return document.getElementById(id);}
 
-function makeSheet(name){return {name:name, cells:{}, colW:COLW_DEFAULT(), nr:DEFAULT_ROWS, dirty:{}, cleared:{}, merges:[], mergeMap:{}, oo:null};}
+function makeSheet(name){return {name:name, cells:{}, colW:COLW_DEFAULT(), rowH:Array(DEFAULT_ROWS).fill(ROWH), nr:DEFAULT_ROWS, frzRows:0, frzCols:0, dirty:{}, cleared:{}, merges:[], mergeMap:{}, oo:null};}
 function addSheet(name,activate){
   if(!name){var n=1;do{name='Sheet'+n;n++;}while(sheets[name]);}
   var s=makeSheet(name);sheets[name]=s;order.push(name);
@@ -1497,10 +1516,56 @@ function buildLayout(){
   for(var i=0;i<s.colW.length;i++){colOffsets.push(totalW);totalW+=s.colW[i];}
   totalH=s.nr*ROWH;
 }
+function renderFrozenCells(){
+  var s=sheets[active],scr=ui.viewport||ui.scroller;
+  var fr=s.frzRows||0,fc=s.frzCols||0;
+  ui.frzCorner.style.display=(fr&&fc)?'block':'none';
+  ui.frzTop.style.display=fr?'block':'none';
+  ui.frzLeft.style.display=fc?'block':'none';
+  ui.colHeadFrozen.style.display=fc?'block':'none';
+  ui.rowHeadFrozen.style.display=fr?'block':'none';
+  if(!fr&&!fc)return;
+  var k;
+  for(k in ui.frzTop.children)if(ui.frzTop.children.hasOwnProperty(k)){
+    var ch=ui.frzTop.children[k];
+    if(ch&&ch.parentNode)ch.parentNode.removeChild(ch);
+  }
+  for(k in ui.frzLeft.children)if(ui.frzLeft.children.hasOwnProperty(k)){
+    var cl=ui.frzLeft.children[k];
+    if(cl&&cl.parentNode)cl.parentNode.removeChild(cl);
+  }
+  function addCell(target,row,col,width,height,left,top,txt){
+    var el=document.createElement('div');el.className='cell';
+    el.style.width=width+'px';el.style.height=height+'px';
+    el.style.left=left+'px';el.style.top=top+'px';
+    el.textContent=txt==null?'':(''+txt);
+    target.appendChild(el);
+  }
+  var frR=Math.min(fr,s.nr),fcC=Math.min(fc,s.colW.length);
+  for(var r=0;r<frR;r++){
+    var y=r*ROWH,rowCell=s.cells[r+':'+0];
+    var txt='';
+    for(var c=0;c<s.colW.length;c++){
+      var key=r+':'+c,cell=s.cells[key];
+      if(!cell)break;
+      if(cell&&cell.v!=null)txt+=(c>0?' ':'')+cell.v;
+    }
+    addCell(ui.frzTop,r,c,s.colW.length?(''+s.colW[0]):0,ROWH,0,y,txt);
+  }
+  for(var c2=0;c2<fcC;c2++){
+    var x2=colOffsets[c2]||0;
+    for(var r2=0;r2<s.nr;r2++){
+      var key2=r2+':'+c2,cell2=s.cells[key2];
+      if(!cell2)continue;
+      addCell(ui.frzLeft,r2,c2,s.colW[c2]||COLW_DEFAULT(),ROWH,x2,r2*ROWH,cell2.v==null?'':(''+cell2.v));
+    }
+  }
+}
 function renderAll(){
   buildLayout();
   renderHeaders();
   renderGrid();
+  renderFrozenCells();
   updateFx();
   updateStatus();
 }
@@ -1538,8 +1603,9 @@ function renderRowHeaders(){
   var rHead=ui.rowHeadInner;
   rHead.style.height=totalH+'px';
   rHead.innerHTML='';
-  var firstRow=Math.max(0,Math.floor(ui.scroller.scrollTop/ROWH)-1);
-  var lastRow=Math.min(s.nr-1,Math.ceil((ui.scroller.scrollTop+ui.scroller.clientHeight)/ROWH)+1);
+  var scr=ui.viewport||ui.scroller;
+  var firstRow=Math.max(0,Math.floor(scr.scrollTop/ROWH)-1);
+  var lastRow=Math.min(s.nr-1,Math.ceil((scr.scrollTop+scr.clientHeight)/ROWH)+1);
   for(var r=firstRow;r<=lastRow;r++){
     var rd=document.createElement('div');
     rd.className='rowHeadCell';
@@ -1557,11 +1623,12 @@ function renderGrid(){
   cvs.innerHTML='';
   cvs.style.width=totalW+'px';
   cvs.style.height=totalH+'px';
-  var firstRow=Math.max(0,Math.floor(ui.scroller.scrollTop/ROWH)-BUFFER);
-  var lastRow=Math.min(s.nr-1,Math.ceil((ui.scroller.scrollTop+ui.scroller.clientHeight)/ROWH)+BUFFER);
+  var scr=ui.viewport||ui.scroller;
+  var firstRow=Math.max(0,Math.floor(scr.scrollTop/ROWH)-BUFFER);
+  var lastRow=Math.min(s.nr-1,Math.ceil((scr.scrollTop+scr.clientHeight)/ROWH)+BUFFER);
   var firstCol=0,lastCol=s.colW.length-1;
   /* visible columns */
-  var scL=ui.scroller.scrollLeft,scW=ui.scroller.clientWidth;
+  var scL=scr.scrollLeft,scW=scr.clientWidth;
   for(var i=0;i<s.colW.length;i++){
     if(colOffsets[i]+s.colW[i]>scL){firstCol=i;break;}
   }
@@ -1646,10 +1713,12 @@ function drawSelection(){
   });
 }
 function syncScroll(){
-  if(ui.colHeadInner)ui.colHeadInner.style.transform='translateX('+(-ui.scroller.scrollLeft)+'px)';
-  if(ui.rowHeadInner)ui.rowHeadInner.style.transform='translateY('+(-ui.scroller.scrollTop)+'px)';
+  var scr=ui.viewport||ui.scroller;
+  if(ui.colHeadInner)ui.colHeadInner.style.transform='translateX('+(-scr.scrollLeft)+'px)';
+  if(ui.rowHeadInner)ui.rowHeadInner.style.transform='translateY('+(-scr.scrollTop)+'px)';
   renderRowHeaders();
   drawSelection();
+  renderFrozenCells();
 }
 
 /* ====================================================================
@@ -2435,7 +2504,7 @@ function bindUI(){
   ui.fontColor=$('fontColor');ui.fillColor=$('fillColor');ui.btnLeft=$('btnLeft');ui.btnCenter=$('btnCenter');
   ui.btnRight=$('btnRight');ui.numFmt=$('numFmt');ui.btnClearFmt=$('btnClearFmt');
   ui.cellRef=$('cellRef');ui.fxInput=$('fxInput');
-  ui.corner=$('corner');ui.colHead=$('colHead');ui.rowHead=$('rowHead');ui.scroller=$('scroller');ui.canvas=$('canvas');
+  ui.corner=$('corner');ui.colHead=$('colHead');ui.rowHead=$('rowHead');ui.scroller=$('scroller');ui.canvas=$('canvas');ui.viewport=$('viewport');ui.frzCorner=$('frzCorner');ui.frzTop=$('frzTop');ui.frzLeft=$('frzLeft');ui.colHeadFrozen=$('colHeadFrozen');ui.rowHeadFrozen=$('rowHeadFrozen');
   ui.tabs=$('tabs');ui.addTab=$('addTab');ui.stCell=$('stCell');ui.stSize=$('stSize');
   ui.btnMoreRows=$('btnMoreRows');ui.openFile=$('openFile');ui.toast=$('toast');
   ui.restoreBanner=$('restoreBanner');ui.btnRestore=$('btnRestore');ui.btnDiscard=$('btnDiscard');
@@ -2466,7 +2535,8 @@ function bindUI(){
   ui.addTab.addEventListener('click',addSheetUI);
   ui.btnMoreRows.addEventListener('click',function(){
     sheets[active].nr=Math.min(MAX_ROWS,sheets[active].nr+100);
-    renderAll();saveSessionNow();toast('Rows added');
+    renderAll();
+  renderFrozenCells();saveSessionNow();toast('Rows added');
   });
 
   ui.fxInput.addEventListener('keydown',function(e){
@@ -2507,7 +2577,7 @@ function bindUI(){
       startEdit(anchor.r,anchor.c);
     }
   });
-  ui.scroller.addEventListener('scroll',syncScroll);
+  ui.scroller.addEventListener('scroll',syncScroll);ui.viewport.addEventListener('scroll',syncScroll);
   ui.colHead.addEventListener('scroll',function(){});
   ui.rowHead.addEventListener('scroll',function(){});
   window.addEventListener('resize',debounce(function(){renderGrid();},80));
