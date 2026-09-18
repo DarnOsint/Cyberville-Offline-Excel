@@ -1,4 +1,4 @@
-const CACHE = 'offline-spreadsheet-v1.1.0';
+const CACHE = 'offline-spreadsheet-v1.1.1';
 const CORE = [
   './',
   './index.html',
